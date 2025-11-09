@@ -160,7 +160,7 @@ def generate_html_report(report: HtmlReport, all_typed_events: list[TypedEvent])
 
             end_of_day_pos = time_to_pos(end_of_day)
             with report.tag('div', style=report.style(width=f'{end_of_day_pos + 10}px', margin='0', padding='0')):
-                report.out(f'Day: {date} Times: {start_time} {end_time} Duration: {duration} Logged in: active={nafk_duration} unlocked={unlocked_duration} active-unlocked={nafk_unlocked_duration}')
+                report.out(f'Day: {date} Times: {start_time} {end_time} Duration: {duration} Logged in: active={nafk_duration} (green+dark-gray) unlocked={unlocked_duration} (green+yellow) active-unlocked={nafk_unlocked_duration} (green)')
 
                 cur_pos = 0
 
