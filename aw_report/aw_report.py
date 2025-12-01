@@ -9,7 +9,6 @@ from aw_client import ActivityWatchClient
 import datetime
 
 from aw_core import Event
-from aw_transform import union_no_overlap
 
 
 # ActivityWatch is on: http://localhost:5600/
@@ -28,13 +27,15 @@ local_tz = tzlocal.get_localzone()
 
 
 eternity = Event(id=None, timestamp=datetime.datetime(year=2000, month=1, day=1, tzinfo=local_tz),
-                 duration=datetime.timedelta(days=365 * 50), data={'eternity': True})
+                 duration=datetime.timedelta(days=365 * 50), data={'__eternity__': True})
 
 
 def complement(events: list[Event]) -> list[Event]:
     """ Returns complement of events. """
     carved_events = aw_transform.union_no_overlap(events, [eternity])
     complement_events = [event for event in carved_events if event.data == eternity.data]
+    for event in complement_events:
+        event.data = {'__complement__': True} # We cannot use __eternity__, because then those would cause bugs when calling complement() on them!
     return complement_events
 
 
@@ -50,7 +51,8 @@ class EventType(Enum):
     UNLOCKED_ACTIVE = 1
     LOCKED_INACTIVE = 2
     LOCKED_ACTIVE = 3
-    FILL = 4
+    OFF_OR_SLEEP = 4
+    FILL = 5
 
 
 @dataclass
@@ -71,6 +73,10 @@ class TypedEvent:
         return self.event.duration
 
 
+def type_events(events: list[Event], kind: EventType = EventType.UNLOCKED_ACTIVE) -> list[TypedEvent]:
+    return [TypedEvent(kind=kind, event=event) for event in events]
+
+
 class HtmlReport:
     #         .span { box-sizing: border-box; border: 1px solid gray; }
     css = """
@@ -81,6 +87,7 @@ class HtmlReport:
         .locked-inactive { background-color: lightgray; }
         .locked-active { background-color: darkgray; }
         .interrupted { background-color: violet; }
+        .off-sleep { background-color: black; }
         .fill { background-color: lightcyan; }
     """
 
@@ -121,7 +128,7 @@ class HtmlReport:
         return '; '.join([f'{key.replace("_", "-")}: {value}' for key, value in styles.items()])
 
 
-def generate_day_report(report: HtmlReport, current_day: datetime.date, day_events: list[TypedEvent]) -> None:
+def generate_day_report(report: HtmlReport, current_day: datetime.date, day_events: list[TypedEvent], label: str = '') -> None:
     """
     Outputs working time report for one day.
     :param current_day:         Date for which events are provided.
@@ -177,7 +184,7 @@ def generate_day_report(report: HtmlReport, current_day: datetime.date, day_even
 
         end_of_day_pos = time_to_pos(end_of_day)
         with report.tag('div', style=report.style(width=f'{end_of_day_pos + 10}px', margin='0', padding='0')):
-            report.out(f'Day: {date_str} <b>Start: {start_time}</b> End: {end_time} Duration: {duration} Logged in: <b>active-unlocked={nafk_unlocked_duration} (green)</b> active={nafk_duration} (green+dark-gray) unlocked={unlocked_duration} (green+yellow)')
+            report.out(f'{label} Day: {date_str} <b>Start: {start_time}</b> End: {end_time} Duration: {duration} Logged in: <b>active-unlocked={nafk_unlocked_duration} (green)</b> active={nafk_duration} (green+dark-gray) unlocked={unlocked_duration} (green+yellow)')
 
             cur_pos = 0
 
@@ -203,6 +210,7 @@ def generate_day_report(report: HtmlReport, current_day: datetime.date, day_even
                         EventType.UNLOCKED_INACTIVE: ('unlocked-inactive', 'Screen did not lock itself?'),
                         EventType.LOCKED_ACTIVE: ('locked-active', 'Not working.'),
                         EventType.LOCKED_INACTIVE: ('locked-inactive', 'Not working.'),
+                        EventType.OFF_OR_SLEEP: ('off-sleep', 'Off or sleep.'),
                         EventType.FILL: ('fill', 'No event (fill).'),
                     }[typed_event.kind]
 
@@ -267,7 +275,7 @@ def main():
     afk_bucket_id = find_bucket('aw-watcher-afk')
     window_bucket_id = find_bucket('aw-watcher-window')
 
-    def get_events_for_day(current_day: datetime.date) -> list[TypedEvent]:
+    def get_events_for_day(current_day: datetime.date) -> tuple[list[TypedEvent], list[Event], list[Event], list[Event], list[Event], list[Event]]:
         daystart = datetime.datetime.combine(current_day, datetime.time()).astimezone(local_tz)
         dayend = daystart + datetime.timedelta(days=1)
 
@@ -275,9 +283,9 @@ def main():
 
         all_afk_events = client.get_events(afk_bucket_id, start=daystart, end=dayend)
         all_afk_events = sort_and_remove_self_overlap(all_afk_events) # Get rid of overlapping events.
+        all_afk_events = aw_transform.filter_period_intersect(all_afk_events, [whole_day])  # I think not necessary, but let's be safe.
         not_afk_events = [event for event in all_afk_events if event.data['status'] == 'not-afk']
         afk_events = [event for event in all_afk_events if event.data['status'] == 'afk']
-        not_afk_events = aw_transform.filter_period_intersect(not_afk_events, [whole_day])  # I think not necessary, but let's be safe.
 
         # In window bucket lock screen:
         # Win 11:
@@ -286,38 +294,48 @@ def main():
         # Win 10:
         # app:   unknown
         # title:
+        win11 = True
+        locker = 'LockApp.exe' if win11 else 'unknown'
         all_window_events = client.get_events(window_bucket_id, start=daystart, end=dayend)
         all_window_events = sort_and_remove_self_overlap(all_window_events) # Get rid of overlapping events.
-        locked_events = [event for event in all_window_events if event.data['app'] in ['LockApp.exe', 'unknown']]
-        locked_events = aw_transform.filter_period_intersect(locked_events, [whole_day])  # I think not necessary, but let's be safe.
+        all_window_events = aw_transform.filter_period_intersect(all_window_events, [whole_day])  # I think not necessary, but let's be safe.
+        locked_events = [event for event in all_window_events if event.data['app'] == locker]
+        unlocked_events = [event for event in all_window_events if event.data['app'] != locker]
 
-        #evs = aw_transform.period_union(not_afk_events, locked_events)
+        #any_events = aw_transform.period_union(all_afk_events, locked_events)
 
-        union_events = aw_transform.period_union(not_afk_events, locked_events)
-        any_events = aw_transform.period_union(all_afk_events, locked_events)
-        both_events = aw_transform.filter_period_intersect(not_afk_events, locked_events)
-        only_nafk = subtract(not_afk_events, locked_events)
-        only_lock = subtract(locked_events, not_afk_events)
-        afky_events = subtract(any_events, union_events)
-        fill_events = subtract([whole_day], any_events)
+        off_events = complement(all_window_events)  # Computer is sleeping or turned off.
+        off_events = aw_transform.filter_period_intersect(off_events, [whole_day])  # Trim off infinity.
+        # filter_period_intersect is buggy of course
+        off_events = sort_and_remove_self_overlap(off_events) # Get rid of overlapping events.
+
+        nafk_not_off = subtract(not_afk_events, off_events)
+        afk_not_off = subtract(afk_events, off_events)
+
+        nafk_unlocked = aw_transform.filter_period_intersect(nafk_not_off, unlocked_events)
+        afk_unlocked = aw_transform.filter_period_intersect(afk_not_off, unlocked_events)
+        nafk_locked = aw_transform.filter_period_intersect(nafk_not_off, locked_events)
+        afk_locked = aw_transform.filter_period_intersect(afk_not_off, locked_events)
+
+        fill_events = [whole_day]
+        fill_events = subtract(fill_events, off_events)
+        fill_events = subtract(fill_events, nafk_unlocked)
+        fill_events = subtract(fill_events, afk_unlocked)
+        fill_events = subtract(fill_events, nafk_locked)
+        fill_events = subtract(fill_events, afk_locked)
 
         typed_events: list[TypedEvent] = []
-        for event in both_events:
-            typed_events.append(TypedEvent(kind=EventType.LOCKED_ACTIVE, event=event))
-        for event in only_nafk:
-            typed_events.append(TypedEvent(kind=EventType.UNLOCKED_ACTIVE, event=event))
-        for event in only_lock:
-            typed_events.append(TypedEvent(kind=EventType.LOCKED_INACTIVE, event=event))
-        for event in afky_events:
-            typed_events.append(TypedEvent(kind=EventType.UNLOCKED_INACTIVE, event=event))
-        for event in fill_events:
-            typed_events.append(TypedEvent(kind=EventType.FILL, event=event))
+        typed_events.extend(type_events(off_events, EventType.OFF_OR_SLEEP))
+        typed_events.extend(type_events(nafk_unlocked, EventType.UNLOCKED_ACTIVE))
+        typed_events.extend(type_events(afk_unlocked, EventType.UNLOCKED_INACTIVE))
+        typed_events.extend(type_events(nafk_locked, EventType.LOCKED_ACTIVE))
+        typed_events.extend(type_events(afk_locked, EventType.LOCKED_INACTIVE))
+        typed_events.extend(type_events(fill_events, EventType.FILL))
 
-        return typed_events
+        return typed_events, off_events, nafk_unlocked, afk_unlocked, nafk_locked, afk_locked
 
-    range_start_date = datetime.date(year=2025, month=11, day=8) # Inclusive.
+    range_start_date = datetime.date(year=2025, month=10, day=30) # Inclusive.
     range_end_date = datetime.datetime.now().date() # Inclusive.
-
 
     html_report = HtmlReport()
     with html_report.tag('html'):
@@ -338,9 +356,15 @@ def main():
                     with html_report.tag('h1'):
                         html_report.out('NEW WEEK')
 
-                day_events = get_events_for_day(current_day)
+                day_events, off_events, nafk_unlocked, afk_unlocked, nafk_locked, afk_locked = get_events_for_day(current_day)
 
-                generate_day_report(html_report, current_day, day_events=day_events)
+                with html_report.tag('div', style=html_report.style(margin_top='20px', padding='5px', border='2px solid red')):
+                    generate_day_report(html_report, current_day, day_events=type_events(off_events, EventType.OFF_OR_SLEEP), label='SLEP')
+                    generate_day_report(html_report, current_day, day_events=type_events(nafk_unlocked, EventType.UNLOCKED_ACTIVE), label='WORK')
+                    generate_day_report(html_report, current_day, day_events=type_events(afk_unlocked, EventType.UNLOCKED_INACTIVE), label='IDLE')
+                    generate_day_report(html_report, current_day, day_events=type_events(nafk_locked, EventType.LOCKED_ACTIVE), label='ALCK')
+                    generate_day_report(html_report, current_day, day_events=type_events(afk_locked, EventType.LOCKED_INACTIVE), label='LOCK')
+                    generate_day_report(html_report, current_day, day_events=day_events, label='SUM')
 
 
     with open('aw-report.html', 'wt') as f:

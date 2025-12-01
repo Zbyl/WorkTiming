@@ -10,7 +10,7 @@ from collections import namedtuple
 # You must enable logging of some events. See: https://blog.netwrix.com/2016/01/15/how-to-get-user-logon-session-times-from-event-log/
 # YOU MUST SET A SCREEN SAVER, at least a Blank one. Otherwise events won't be logged!
 # Tune this date:
-global_date_start = datetime.datetime.fromisoformat('2025-09-30').astimezone()
+global_date_start = datetime.datetime.fromisoformat('2025-10-30').astimezone()
 
 EventData = namedtuple('EventData', [
     'begin',                # True if this is a lock event, false if it is unlock event.

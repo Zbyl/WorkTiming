@@ -16,7 +16,7 @@ Next iteration will be working based on ActivityWatch.
 
 ## ActivityWatch-based version
 
-`aw_report`
+`aw_report` - still not working.
 
 In order to use it install https://activitywatch.net/.
 
